@@ -10,8 +10,8 @@ builds:
   - windows
   ldflags:
   - -s -w  -X main.commit={{.Commit}} -X main.date={{.Date}} -X main.builtBy=goreleaser
-  binary: genk8s
-  main: ./cmd/kubernetes/generateTemplates.go
+  binary: supercaster
+  main: ./main/main.go
   ignore:
   - goos: linux
     goarch: 386
@@ -20,7 +20,7 @@ archives:
     386: i386
     amd64: x86_64
   files:
-  - configs/*.yml
+  - configs/*
   format_overrides:
   - goos: windows
     format: zip
