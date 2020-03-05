@@ -18,7 +18,8 @@ const configGrpcStreamAddress = "grpc.stream.address"
 const configDirection = "direction"
 const configDirectionM2G = "m2g"
 const configDirectionG2M = "g2m"
-const configDirectionMM = "mm"
+const configDirectionMCSend = "mcsend"
+const configDirectionMCRecv = "mcrecv"
 const configNetworkInterface = "network.interface"
 const configMaxDatagramSize = "multicast.maxDatagramSize"
 
@@ -26,7 +27,7 @@ func init() {
 	flag.String(configMulticastAddress, "", "Multicast address and port separated by ':'.")
 	flag.String(configGrpcStreamName, "", "gRPC stream name.")
 	flag.String(configGrpcStreamAddress, "", "gRPC stream address and port separated by ':'.")
-	flag.String(configDirection, "", "'m2g' for multicast-to-grpc, 'grpcToMulticast' for grpc-to-multicast.")
+	flag.String(configDirection, "", "'m2g' for multicast-to-grpc, 'g2m' for grpc-to-multicast, 'mcsend' for multicast sender only, 'mcrecv' for multicast receiver only.")
 	flag.String(configNetworkInterface, "", "Network interface to use.")
 	flag.String(configMaxDatagramSize, "", "Max datagram size.")
 }
@@ -39,19 +40,31 @@ func main() {
 	multicastHostport := gaz.Viper.GetString(configMulticastAddress)
 	streamName := gaz.Viper.GetString(configGrpcStreamName)
 	direction := gaz.Viper.GetString(configDirection)
-	netInterface := getNetworkInterface(gaz)
 	maxDatagramSize := gaz.Viper.GetInt(configMaxDatagramSize)
 	streamHostport := gaz.Viper.GetString(configGrpcStreamAddress)
 
 	switch direction {
 	case configDirectionM2G:
-		go multicastToGrpc(netInterface, multicastHostport, maxDatagramSize, streamName, gaz)
+		provider, err := gaz.NewStreamProvider(streamName, "unknown")
+		if err != nil {
+			panic(err)
+		}
+		netInterface := getNetworkInterface(gaz)
+		go receiveMulticastData(netInterface, multicastHostport, maxDatagramSize, func (n int, src string, b []byte) {
+			gorillaz.Log.Info(fmt.Sprintf("Received %d bytes from %s.", n, src))
+			provider.Submit(&stream.Event{Value: b[:n]})
+			gorillaz.Log.Debug("Published on stream")
+		})
 	case configDirectionG2M:
 		grpcEndpoints := make([]string, 0)
-		grpcEndpoints[0] = streamHostport
+		grpcEndpoints = append(grpcEndpoints, streamHostport)
 		go grpcToMulticast(grpcEndpoints, streamName, multicastHostport, gaz)
-	case configDirectionMM:
-		go receiveTestDataFromMulticast(netInterface, multicastHostport, maxDatagramSize)
+	case configDirectionMCRecv:
+		netInterface := getNetworkInterface(gaz)
+		go receiveMulticastData(netInterface, multicastHostport, maxDatagramSize, func (n int, src string, b []byte) {
+			gorillaz.Log.Info(fmt.Sprintf("Received %d bytes from %s: %s", n, src, string(b[:n])))
+		})
+	case configDirectionMCSend:
 		go publishTestDataToMulticast(multicastHostport)
 	default:
 		panic(fmt.Errorf("invalid direction: %s", direction))
@@ -61,7 +74,9 @@ func main() {
 	select {}
 }
 
-func receiveTestDataFromMulticast(netInterface *net.Interface, multicastHostPort string, maxDatagramSize int) {
+type multicastHandler func(nbBytes int, source string, data []byte)
+
+func receiveMulticastData(netInterface *net.Interface, multicastHostPort string, maxDatagramSize int, handler multicastHandler) {
 	hostPort := strings.Split(multicastHostPort, ":")
 	group := net.ParseIP(hostPort[0])
 	c, err := net.ListenPacket("udp", fmt.Sprintf("0.0.0.0:%s", hostPort[1]))
@@ -90,7 +105,7 @@ func receiveTestDataFromMulticast(netInterface *net.Interface, multicastHostPort
 		if err != nil {
 			gorillaz.Log.Fatal("Unable to read.", zap.Error(err))
 		}
-		gorillaz.Log.Info(fmt.Sprintf("Received %d bytes from %s: %s", n, src, string(b[:n])))
+		handler(n, src.String(), b)
 	}
 }
 
@@ -138,45 +153,6 @@ func getNetworkInterface(gaz *gorillaz.Gaz) *net.Interface {
 		gorillaz.Sugar.Infof("Listening on network interface %s", netInterface.Name)
 	}
 	return netInterface
-}
-
-func multicastToGrpc(netInterface *net.Interface, multicastHostPort string, maxDatagramSize int, streamName string, gaz *gorillaz.Gaz) {
-	provider, err := gaz.NewStreamProvider(streamName, "unknown")
-	if err != nil {
-		panic(err)
-	}
-	hostPort := strings.Split(multicastHostPort, ":")
-	group := net.ParseIP(hostPort[0])
-	c, err := net.ListenPacket("udp", fmt.Sprintf("0.0.0.0:%s", hostPort[1]))
-	if err != nil {
-		gorillaz.Log.Fatal("Unable to listen.", zap.Error(err))
-	}
-	defer func() {
-		if c.Close() != nil {
-			// nothing
-		}
-	}()
-	p := ipv4.NewPacketConn(c)
-	if err := p.JoinGroup(netInterface, &net.UDPAddr{IP: group}); err != nil {
-		gorillaz.Log.Fatal("Unable to join multicast address.", zap.Error(err))
-	}
-	if loop, err := p.MulticastLoopback(); err == nil {
-		if !loop {
-			if err := p.SetMulticastLoopback(true); err != nil {
-				gorillaz.Log.Fatal("Unable to set multicast loopback.", zap.Error(err))
-			}
-		}
-	}
-	b := make([]byte, maxDatagramSize)
-	for {
-		n, _, src, err := p.ReadFrom(b)
-		if err != nil {
-			gorillaz.Log.Fatal("Unable to read.", zap.Error(err))
-		}
-		gorillaz.Log.Info(fmt.Sprintf("Received %d bytes from %s.", n, src))
-		provider.Submit(&stream.Event{Value: b[:n]})
-		gorillaz.Log.Debug("Published on stream")
-	}
 }
 
 func grpcToMulticast(grpcEndpoints []string, streamName string, multicastHostport string, gaz *gorillaz.Gaz) {
