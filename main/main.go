@@ -6,6 +6,7 @@ import (
 	"github.com/skysoft-atm/gorillaz"
 	"github.com/skysoft-atm/gorillaz/stream"
 	"go.uber.org/zap"
+	"golang.org/x/net/ipv4"
 	"net"
 	"strings"
 	"time"
@@ -60,26 +61,36 @@ func main() {
 	select {}
 }
 
-func receiveTestDataFromMulticast(netInterface *net.Interface, multicastHostport string, maxDatagramSize int) {
-	addr, err := net.ResolveUDPAddr("udp", multicastHostport)
+func receiveTestDataFromMulticast(netInterface *net.Interface, multicastHostPort string, maxDatagramSize int) {
+	hostPort := strings.Split(multicastHostPort, ":")
+	group := net.ParseIP(hostPort[0])
+	c, err := net.ListenPacket("udp", fmt.Sprintf("0.0.0.0:%s", hostPort[1]))
 	if err != nil {
-		gorillaz.Log.Fatal("Unable to resolve UDP address.", zap.Error(err))
+		gorillaz.Log.Fatal("Unable to listen.", zap.Error(err))
 	}
-	l, err := net.ListenMulticastUDP("udp", netInterface, addr)
-	if err != nil {
-		gorillaz.Log.Fatal("ListenMulticastUDP failed:", zap.Error(err))
-	}
-	err = l.SetReadBuffer(maxDatagramSize)
-	if err != nil {
-		gorillaz.Log.Fatal("SetReadBuffer failed:", zap.Error(err))
-	}
-	for {
-		b := make([]byte, maxDatagramSize)
-		n, _, err := l.ReadFromUDP(b)
-		if err != nil {
-			gorillaz.Log.Fatal("ReadFromUDP failed:", zap.Error(err))
+	defer func() {
+		if c.Close() != nil {
+			// nothing
 		}
-		gorillaz.Log.Info(fmt.Sprintf("Received %s", string(b[:n])))
+	}()
+	p := ipv4.NewPacketConn(c)
+	if err := p.JoinGroup(netInterface, &net.UDPAddr{IP: group}); err != nil {
+		gorillaz.Log.Fatal("Unable to join multicast address.", zap.Error(err))
+	}
+	if loop, err := p.MulticastLoopback(); err == nil {
+		if !loop {
+			if err := p.SetMulticastLoopback(true); err != nil {
+				gorillaz.Log.Fatal("Unable to set multicast loopback.", zap.Error(err))
+			}
+		}
+	}
+	b := make([]byte, maxDatagramSize)
+	for {
+		n, _, src, err := p.ReadFrom(b)
+		if err != nil {
+			gorillaz.Log.Fatal("Unable to read.", zap.Error(err))
+		}
+		gorillaz.Log.Info(fmt.Sprintf("Received %d bytes from %s: %s", n, src, string(b[:n])))
 	}
 }
 
@@ -129,29 +140,40 @@ func getNetworkInterface(gaz *gorillaz.Gaz) *net.Interface {
 	return netInterface
 }
 
-func multicastToGrpc(netInterface *net.Interface, multicastAddr string, maxDatagramSize int, streamName string, gaz *gorillaz.Gaz) {
+func multicastToGrpc(netInterface *net.Interface, multicastHostPort string, maxDatagramSize int, streamName string, gaz *gorillaz.Gaz) {
 	provider, err := gaz.NewStreamProvider(streamName, "unknown")
 	if err != nil {
 		panic(err)
 	}
-	addr, err := net.ResolveUDPAddr("udp", multicastAddr)
+	hostPort := strings.Split(multicastHostPort, ":")
+	group := net.ParseIP(hostPort[0])
+	c, err := net.ListenPacket("udp", fmt.Sprintf("0.0.0.0:%s", hostPort[1]))
 	if err != nil {
-		gorillaz.Log.Fatal("Unable to resolve UDP address.", zap.Error(err))
+		gorillaz.Log.Fatal("Unable to listen.", zap.Error(err))
 	}
-	l, err := net.ListenMulticastUDP("udp", netInterface, addr)
-	if err != nil {
-		gorillaz.Log.Fatal("ListenMulticastUDP failed:", zap.Error(err))
-	}
-	err = l.SetReadBuffer(maxDatagramSize)
-	if err != nil {
-		gorillaz.Log.Fatal("SetReadBuffer failed:", zap.Error(err))
-	}
-	for {
-		b := make([]byte, maxDatagramSize)
-		n, _, err := l.ReadFromUDP(b)
-		if err != nil {
-			gorillaz.Log.Fatal("ReadFromUDP failed:", zap.Error(err))
+	defer func() {
+		if c.Close() != nil {
+			// nothing
 		}
+	}()
+	p := ipv4.NewPacketConn(c)
+	if err := p.JoinGroup(netInterface, &net.UDPAddr{IP: group}); err != nil {
+		gorillaz.Log.Fatal("Unable to join multicast address.", zap.Error(err))
+	}
+	if loop, err := p.MulticastLoopback(); err == nil {
+		if !loop {
+			if err := p.SetMulticastLoopback(true); err != nil {
+				gorillaz.Log.Fatal("Unable to set multicast loopback.", zap.Error(err))
+			}
+		}
+	}
+	b := make([]byte, maxDatagramSize)
+	for {
+		n, _, src, err := p.ReadFrom(b)
+		if err != nil {
+			gorillaz.Log.Fatal("Unable to read.", zap.Error(err))
+		}
+		gorillaz.Log.Info(fmt.Sprintf("Received %d bytes from %s.", n, src))
 		provider.Submit(&stream.Event{Value: b[:n]})
 		gorillaz.Log.Debug("Published on stream")
 	}
