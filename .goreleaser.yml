@@ -3,27 +3,26 @@ before:
     - go mod tidy
 builds:
 - env:
-  - GO111MODULE=on
-  - CGO_ENABLED=0
+    - GO111MODULE=on
+    - CGO_ENABLED=0
   goos:
-  - linux
-  - windows
+    - linux
+    - windows
+  goarch:
+    - amd64
   ldflags:
-  - -s -w  -X main.commit={{.Commit}} -X main.date={{.Date}} -X main.builtBy=goreleaser
+    - -s -w  -X main.commit={{.Commit}} -X main.date={{.Date}} -X main.builtBy=goreleaser
   binary: supercaster
   main: ./main/main.go
-  ignore:
-  - goos: linux
-    goarch: 386
 archives:
 - replacements:
     386: i386
     amd64: x86_64
   files:
-  - configs/*
+    - configs/*
   format_overrides:
-  - goos: windows
-    format: zip
+    - goos: windows
+      format: zip
 checksum:
   name_template: 'checksums.txt'
 snapshot:
@@ -32,5 +31,5 @@ changelog:
   sort: asc
   filters:
     exclude:
-    - '^docs:'
-    - '^test:'
+      - '^docs:'
+      - '^test:'
