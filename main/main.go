@@ -34,7 +34,6 @@ func init() {
 
 func main() {
 	gaz := gorillaz.New()
-	gaz.SetLive(true)
 	gaz.Run()
 
 	multicastHostport := gaz.Viper.GetString(configMulticastAddress)
@@ -50,7 +49,7 @@ func main() {
 			panic(err)
 		}
 		netInterface := getNetworkInterface(gaz)
-		go receiveMulticastData(netInterface, multicastHostport, maxDatagramSize, func (n int, src string, b []byte) {
+		go receiveMulticastData(netInterface, multicastHostport, maxDatagramSize, func(n int, src string, b []byte) {
 			gorillaz.Log.Info(fmt.Sprintf("Received %d bytes from %s.", n, src))
 			provider.Submit(&stream.Event{Value: b[:n]})
 			gorillaz.Log.Debug("Published on stream")
@@ -61,7 +60,7 @@ func main() {
 		go grpcToMulticast(grpcEndpoints, streamName, multicastHostport, gaz)
 	case configDirectionMCRecv:
 		netInterface := getNetworkInterface(gaz)
-		go receiveMulticastData(netInterface, multicastHostport, maxDatagramSize, func (n int, src string, b []byte) {
+		go receiveMulticastData(netInterface, multicastHostport, maxDatagramSize, func(n int, src string, b []byte) {
 			gorillaz.Log.Info(fmt.Sprintf("Received %d bytes from %s: %s", n, src, string(b[:n])))
 		})
 	case configDirectionMCSend:
