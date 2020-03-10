@@ -1,7 +1,9 @@
 package multicast
 
 import (
+	"context"
 	"fmt"
+	"github.com/lestrrat-go/backoff"
 	"github.com/skysoft-atm/gorillaz"
 	"github.com/skysoft-atm/gorillaz/stream"
 	"go.uber.org/zap"
@@ -9,6 +11,13 @@ import (
 	"net"
 	"strings"
 	"time"
+)
+
+var backoffPolicy = backoff.NewExponential(
+	backoff.WithInterval(500*time.Millisecond),
+	backoff.WithMaxInterval(5*time.Second),
+	backoff.WithJitterFactor(0.05),
+	backoff.WithMaxRetries(0),
 )
 
 const ConfigNetworkInterface = "network.interface"
@@ -118,7 +127,9 @@ func GetNetworkInterface(gaz *gorillaz.Gaz) *net.Interface {
 func GrpcToMulticast(grpcEndpoints []string, streamName string, multicastHostPort string, gaz *gorillaz.Gaz) error {
 	gorillaz.Log.Info("Starting publication", zap.String("stream name", streamName), zap.Strings("endpoint", grpcEndpoints),
 		zap.String("multicast address", multicastHostPort))
-	for {
+	bo, cancel := backoffPolicy.Start(context.Background())
+	defer cancel()
+	for backoff.Continue(bo) {
 		consumer, err := gaz.ConsumeStream(grpcEndpoints, streamName)
 		if err != nil {
 			return fmt.Errorf("unable to consume stream %s: %w", streamName, err)
@@ -128,13 +139,15 @@ func GrpcToMulticast(grpcEndpoints []string, streamName string, multicastHostPor
 			return err
 		}
 	}
+	return nil
 }
 
 func ServiceStreamToMulticast(service string, streamName string, multicastHostPort string, gaz *gorillaz.Gaz) error {
 	gorillaz.Log.Info("Starting publication", zap.String("stream name", streamName), zap.String("service", service),
 		zap.String("multicast address", multicastHostPort))
-
-	for {
+	bo, cancel := backoffPolicy.Start(context.Background())
+	defer cancel()
+	for backoff.Continue(bo) {
 		consumer, err := gaz.DiscoverAndConsumeServiceStream(service, streamName)
 		if err != nil {
 			return fmt.Errorf("unable to consume stream %s/%s: %w", service, streamName, err)
@@ -144,6 +157,7 @@ func ServiceStreamToMulticast(service string, streamName string, multicastHostPo
 			return err
 		}
 	}
+	return nil
 }
 
 func StreamToMulticast(stream gorillaz.StreamConsumer, multicastHostPort string) error {
