@@ -46,31 +46,45 @@ func main() {
 
 	switch direction {
 	case configDirectionM2G:
-		go panicIf(multicast.UdpToStream(gaz, udpSource(gaz, udpHostport, maxDatagramSize), streamName))
+		go panicIf(func() error {
+			return multicast.UdpToStream(gaz, udpSource(gaz, udpHostport, maxDatagramSize), streamName)
+		})
 	case configDirectionB2G:
-		go panicIf(broadcast.UdpToStream(gaz, udpSource(gaz, udpHostport, maxDatagramSize), streamName))
+		go panicIf(func() error {
+			return broadcast.UdpToStream(gaz, udpSource(gaz, udpHostport, maxDatagramSize), streamName)
+		})
 	case configDirectionG2U:
 		streamService := gaz.Viper.GetString(configGrpcStreamService)
 		streamHostport := gaz.Viper.GetString(configGrpcStreamHostPort)
 		if streamService != "" {
-			go panicIf(network.ServiceStreamToUdp(streamService, streamName, udpHostport, gaz))
+			go panicIf(func() error {
+				return network.ServiceStreamToUdp(streamService, streamName, udpHostport, gaz)
+			})
 		} else if streamHostport != "" {
 			grpcEndpoints := make([]string, 0)
 			grpcEndpoints = append(grpcEndpoints, streamHostport)
-			go panicIf(network.GrpcToUdp(grpcEndpoints, streamName, udpHostport, gaz))
+			go panicIf(func() error {
+				return network.GrpcToUdp(grpcEndpoints, streamName, udpHostport, gaz)
+			})
 		} else {
 			panic(fmt.Errorf("at least one of these parameters is required: %s, %s", configGrpcStreamService, configGrpcStreamHostPort))
 		}
 	case configDirectionMCRecv:
-		go panicIf(multicast.ReceiveData(udpSource(gaz, udpHostport, maxDatagramSize), func(n int, src string, b []byte) {
-			gorillaz.Log.Info(fmt.Sprintf("Received %d bytes from %s: %s", n, src, string(b[:n])))
-		}))
+		go panicIf(func() error {
+			return multicast.ReceiveData(udpSource(gaz, udpHostport, maxDatagramSize), func(n int, src string, b []byte) {
+				gorillaz.Log.Info(fmt.Sprintf("Received %d bytes from %s: %s", n, src, string(b[:n])))
+			})
+		})
 	case configDirectionBCRecv:
-		go panicIf(broadcast.ReceiveData(udpSource(gaz, udpHostport, maxDatagramSize), func(n int, src string, b []byte) {
-			gorillaz.Log.Info(fmt.Sprintf("Received %d bytes from %s: %s", n, src, string(b[:n])))
-		}))
+		go panicIf(func() error {
+			return broadcast.ReceiveData(udpSource(gaz, udpHostport, maxDatagramSize), func(n int, src string, b []byte) {
+				gorillaz.Log.Info(fmt.Sprintf("Received %d bytes from %s: %s", n, src, string(b[:n])))
+			})
+		})
 	case configDirectionTestUdpSend:
-		go panicIf(network.PublishTestData(udpHostport))
+		go panicIf(func() error {
+			return network.PublishTestData(udpHostport)
+		})
 	default:
 		panic(fmt.Errorf("invalid direction: %s", direction))
 	}
@@ -88,8 +102,8 @@ func udpSource(gaz *gorillaz.Gaz, udpHostport string, maxDatagramSize int) netwo
 	return source
 }
 
-func panicIf(err error) {
-	if err != nil {
+func panicIf(f func() error) {
+	if err := f(); err != nil {
 		panic(err)
 	}
 }
