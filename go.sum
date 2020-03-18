@@ -154,7 +154,6 @@ github.com/rogpeppe/fastuuid v0.0.0-20150106093220-6724a57986af/go.mod h1:XWv6So
 github.com/sirupsen/logrus v1.2.0/go.mod h1:LxeOpSwHxABJmUn/MG1IvRgCAasNZTLOkJPxbbu5VWo=
 github.com/skysoft-atm/gorillaz v0.7.5 h1:aVjr7HI752xQRBe4y7OyfAZoyqKDUouF+FLQWdTdf2E=
 github.com/skysoft-atm/gorillaz v0.7.5/go.mod h1:FDx6bwI5q2LdXybCTiaIzdFOh2KcrxvKJ6mwO3SN/nM=
-github.com/skysoft-atm/udp-mesh v0.0.10 h1:Ixt9rMe78ueqJJ93lqDPcKieTazEN02I6Tbbs8Brh5I=
 github.com/skysoft-atm/zipkin-go-light-opentracing v0.0.1 h1:zfDhWH75TUjV6qOEBkslsS9A0JHBtu3N7mGQXZiB7WA=
 github.com/skysoft-atm/zipkin-go-light-opentracing v0.0.1/go.mod h1:VRTFlaRkZ80ISLu0RaGCEkuqCJcvPY/qDg8wH+Zi1i0=
 github.com/soheilhy/cmux v0.1.4 h1:0HKaf1o97UwFjHH9o5XsHUOF+tqmdA7KEzXLpiyaw0E=
