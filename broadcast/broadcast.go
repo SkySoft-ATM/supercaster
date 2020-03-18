@@ -37,6 +37,7 @@ func UdpToStream(g *gorillaz.Gaz, source network.UdpSource, streamName string) e
 	return ReceiveData(source, func(nbBytes int, source string, data []byte) {
 		gorillaz.Log.Debug(fmt.Sprintf("Received %d bytes from %s.", nbBytes, source))
 		err = sp.SubmitNonBlocking(&stream.Event{
+			Key:   []byte(source),
 			Value: data[:nbBytes],
 		})
 		if err != nil {
