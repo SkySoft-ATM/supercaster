@@ -43,15 +43,16 @@ func main() {
 	streamName := gaz.Viper.GetString(configGrpcStreamName)
 	direction := gaz.Viper.GetString(configDirection)
 	maxDatagramSize := gaz.Viper.GetInt(configMaxDatagramSize)
+	interfaceName := gaz.Viper.GetString(network.ConfigNetworkInterface)
 
 	switch direction {
 	case configDirectionM2G:
 		go panicIf(func() error {
-			return multicast.UdpToStream(gaz, udpSource(gaz, udpHostport, maxDatagramSize), streamName)
+			return multicast.UdpToStream(gaz, udpSource(interfaceName, udpHostport, maxDatagramSize), streamName)
 		})
 	case configDirectionB2G:
 		go panicIf(func() error {
-			return broadcast.UdpToStream(gaz, udpSource(gaz, udpHostport, maxDatagramSize), streamName)
+			return broadcast.UdpToStream(gaz, udpSource(interfaceName, udpHostport, maxDatagramSize), streamName)
 		})
 	case configDirectionG2U:
 		streamService := gaz.Viper.GetString(configGrpcStreamService)
@@ -71,13 +72,13 @@ func main() {
 		}
 	case configDirectionMCRecv:
 		go panicIf(func() error {
-			return multicast.ReceiveData(udpSource(gaz, udpHostport, maxDatagramSize), func(n int, src string, b []byte) {
+			return multicast.ReceiveData(udpSource(interfaceName, udpHostport, maxDatagramSize), func(n int, src string, b []byte) {
 				gorillaz.Log.Info(fmt.Sprintf("Received %d bytes from %s: %s", n, src, string(b[:n])))
 			})
 		})
 	case configDirectionBCRecv:
 		go panicIf(func() error {
-			return broadcast.ReceiveData(udpSource(gaz, udpHostport, maxDatagramSize), func(n int, src string, b []byte) {
+			return broadcast.ReceiveData(udpSource(interfaceName, udpHostport, maxDatagramSize), func(n int, src string, b []byte) {
 				gorillaz.Log.Info(fmt.Sprintf("Received %d bytes from %s: %s", n, src, string(b[:n])))
 			})
 		})
@@ -93,9 +94,9 @@ func main() {
 	select {}
 }
 
-func udpSource(gaz *gorillaz.Gaz, udpHostport string, maxDatagramSize int) network.UdpSource {
+func udpSource(interfaceName string, udpHostport string, maxDatagramSize int) network.UdpSource {
 	source := network.UdpSource{
-		NetInterface:    network.GetNetworkInterface(gaz),
+		NetInterface:    network.GetNetworkInterface(interfaceName),
 		HostPort:        udpHostport,
 		MaxDatagramSize: maxDatagramSize,
 	}

@@ -3,10 +3,15 @@ package network
 import (
 	"context"
 	"fmt"
+	"github.com/google/gopacket/layers"
+	"github.com/google/gopacket/pcap"
 	"github.com/lestrrat-go/backoff"
 	"github.com/skysoft-atm/gorillaz"
+	"github.com/skysoft-atm/gorillaz/stream"
+	"github.com/skysoft-atm/supercaster/udp"
 	"go.uber.org/zap"
 	"net"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -20,6 +25,8 @@ var backoffPolicy = backoff.NewExponential(
 
 const ConfigNetworkInterface = "network.interface"
 
+var multicastHwBase, _ = net.ParseMAC("01:00:5e:00:00:00")
+
 type Handler func(nbBytes int, source string, data []byte)
 
 type UdpSource struct {
@@ -28,17 +35,32 @@ type UdpSource struct {
 	MaxDatagramSize int
 }
 
-func GetNetworkInterface(gaz *gorillaz.Gaz) *net.Interface {
+func GetNetworkInterface(interfaceName string) *net.Interface {
 	interfaces, e := net.Interfaces()
 	if e != nil {
 		panic(e)
 	}
 	gorillaz.Log.Info("Available interfaces:")
+
 	for _, i := range interfaces {
-		gorillaz.Log.Info(i.Name)
+
+		addresses := make([]string, 0)
+		addr, err := i.Addrs()
+		if err == nil {
+			for _, a := range addr {
+				ip := a.String()
+				if ip != "" {
+					ip := removeMask(ip)
+					addresses = append(addresses, ip)
+				}
+			}
+			gorillaz.Sugar.Infof("%s - %s", i.Name, strings.Join(addresses, ","))
+		} else {
+			gorillaz.Log.Info(i.Name)
+		}
+
 	}
 	var netInterface *net.Interface
-	interfaceName := gaz.Viper.GetString(ConfigNetworkInterface)
 	if interfaceName != "" {
 		for _, i := range interfaces {
 			if i.Name == strings.TrimSpace(interfaceName) {
@@ -48,11 +70,19 @@ func GetNetworkInterface(gaz *gorillaz.Gaz) *net.Interface {
 		}
 	}
 	if netInterface == nil {
-		gorillaz.Log.Info("Listening on all network interfaces")
+		gorillaz.Log.Info("Network interface not found")
 	} else {
-		gorillaz.Sugar.Infof("Listening on network interface %s", netInterface.Name)
+		gorillaz.Sugar.Infof("Selected network interface %s", netInterface.Name)
 	}
 	return netInterface
+}
+
+func removeMask(ip string) string {
+	maskIndex := strings.LastIndex(ip, "/")
+	if maskIndex != -1 {
+		return ip[:maskIndex]
+	}
+	return ip
 }
 
 func PublishTestData(hostPort string) error {
@@ -64,20 +94,23 @@ func PublishTestData(hostPort string) error {
 	if err != nil {
 		return err
 	}
-	for i := 0; i < 50; i++ {
-		time.Sleep(2 * time.Second)
+	i := 0
+	t := time.NewTicker(2 * time.Second)
+	defer t.Stop()
+	for range t.C {
 		gorillaz.Log.Info(fmt.Sprintf("Sending testdata%d", i))
 		_, err := c.Write([]byte(fmt.Sprintf("testdata%d", i)))
 		if err != nil {
 			gorillaz.Log.Error("Error while writing to UDP ", zap.Error(err))
 		}
+		i++
 	}
 	return nil
 }
 
-func GrpcToUdp(grpcEndpoints []string, streamName string, multicastHostPort string, gaz *gorillaz.Gaz) error {
+func GrpcToUdp(grpcEndpoints []string, streamName string, hostPort string, gaz *gorillaz.Gaz) error {
 	gorillaz.Log.Info("Starting publication", zap.String("stream name", streamName), zap.Strings("endpoint", grpcEndpoints),
-		zap.String("multicast address", multicastHostPort))
+		zap.String("multicast address", hostPort))
 	bo, cancel := backoffPolicy.Start(context.Background())
 	defer cancel()
 	for backoff.Continue(bo) {
@@ -85,7 +118,7 @@ func GrpcToUdp(grpcEndpoints []string, streamName string, multicastHostPort stri
 		if err != nil {
 			return fmt.Errorf("unable to consume stream %s: %w", streamName, err)
 		}
-		err = StreamToUdp(consumer, multicastHostPort)
+		err = StreamToUdp(consumer, hostPort)
 		if err != nil {
 			return err
 		}
@@ -93,9 +126,9 @@ func GrpcToUdp(grpcEndpoints []string, streamName string, multicastHostPort stri
 	return nil
 }
 
-func ServiceStreamToUdp(service string, streamName string, multicastHostPort string, gaz *gorillaz.Gaz) error {
+func ServiceStreamToUdp(service string, streamName string, hostPort string, gaz *gorillaz.Gaz) error {
 	gorillaz.Log.Info("Starting publication", zap.String("stream name", streamName), zap.String("service", service),
-		zap.String("multicast address", multicastHostPort))
+		zap.String("multicast address", hostPort))
 	bo, cancel := backoffPolicy.Start(context.Background())
 	defer cancel()
 	for backoff.Continue(bo) {
@@ -103,7 +136,8 @@ func ServiceStreamToUdp(service string, streamName string, multicastHostPort str
 		if err != nil {
 			return fmt.Errorf("unable to consume stream %s/%s: %w", service, streamName, err)
 		}
-		err = StreamToUdp(consumer, multicastHostPort)
+		err = StreamToUdp(consumer, hostPort)
+		consumer.Stop()
 		if err != nil {
 			return err
 		}
@@ -111,7 +145,11 @@ func ServiceStreamToUdp(service string, streamName string, multicastHostPort str
 	return nil
 }
 
-func StreamToUdp(stream gorillaz.StreamConsumer, hostPort string) error {
+type EventStream interface {
+	EvtChan() chan *stream.Event
+}
+
+func StreamToUdp(stream EventStream, hostPort string) error {
 	addr, err := net.ResolveUDPAddr("udp", hostPort)
 	if err != nil {
 		return fmt.Errorf("unable to resolve address: %w", err)
@@ -131,4 +169,200 @@ func StreamToUdp(stream gorillaz.StreamConsumer, hostPort string) error {
 		}
 	}
 	return nil
+}
+
+type streamDiscovery interface {
+	DiscoverAndConsumeServiceStream(service, stream string, opts ...gorillaz.ConsumerConfigOpt) (gorillaz.StreamConsumer, error)
+}
+
+func ServiceStreamToUdpSpoofSourceAddr(service, streamName, interfaceName, hostPort string, sd streamDiscovery, pubType UdpPubType) error {
+	gorillaz.Log.Info("Starting publication", zap.String("stream name", streamName), zap.String("service", service),
+		zap.String("multicast address", hostPort))
+	bo, cancel := backoffPolicy.Start(context.Background())
+	defer cancel()
+
+	for backoff.Continue(bo) {
+		consumer, err := sd.DiscoverAndConsumeServiceStream(service, streamName)
+		if err != nil {
+			return fmt.Errorf("unable to consume stream %s/%s: %w", service, streamName, err)
+		}
+		err = StreamToUdpSpoofSourceAddr(consumer, UdpPub{
+			HostPort:      hostPort,
+			InterfaceName: interfaceName,
+			Type:          pubType,
+		})
+		consumer.Stop()
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+type UdpPubType int
+
+const (
+	Broadcast = iota
+	Multicast
+)
+
+type UdpPub struct {
+	InterfaceName string
+	HostPort      string
+	Type          UdpPubType
+}
+
+func StreamToUdpSpoofSourceAddr(stream EventStream, udpPub UdpPub) error {
+	netIf := GetNetworkInterface(udpPub.InterfaceName)
+	hwAddr := netIf.HardwareAddr
+	device, err := GetPcapNetworkDevice(netIf)
+	if err != nil {
+		return fmt.Errorf("network device not found: %w", err)
+	}
+	handle, err := pcap.OpenLive(device, 1024, false, pcap.BlockForever)
+	if err != nil {
+		return fmt.Errorf("error on OpenLive: %w", err)
+	}
+	defer handle.Close()
+
+	dstMac := layers.EthernetBroadcast
+	if udpPub.Type == Multicast {
+		dstMac, err = MulticastIpToMac(net.ParseIP(getIp(udpPub.HostPort)))
+		if err != nil {
+			return err
+		}
+	}
+	dstPort, err := getPort(udpPub.HostPort)
+	if err != nil {
+		return err
+	}
+
+	for e := range stream.EvtChan() {
+		srcPort, err := getPort(string(e.Key))
+		if err != nil {
+			gorillaz.Log.Warn("could not extract port", zap.Error(err))
+			continue
+		}
+		frameBytes, err := udp.CreateSerializedUDPFrame(udp.UdpFrameOptions{
+			SourceIP:     net.ParseIP(getIp(string(e.Key))),
+			DestIP:       net.ParseIP(getIp(udpPub.HostPort)),
+			SourcePort:   srcPort,
+			DestPort:     dstPort,
+			SourceMac:    hwAddr,
+			DestMac:      dstMac,
+			IsIPv6:       false,
+			PayloadBytes: e.Value,
+		})
+		if err != nil {
+			gorillaz.Log.Fatal("error on createSerializedUDPFrame", zap.Error(err))
+		}
+
+		if err := handle.WritePacketData(frameBytes); err != nil {
+			gorillaz.Log.Fatal("error on WritePacketData", zap.Error(err))
+		}
+		fmt.Println("Sent", string(e.Value))
+	}
+
+	return nil
+}
+
+func getIp(hostPort string) string {
+	sp := strings.Split(hostPort, ":")
+	if len(sp) > 0 {
+		return sp[0]
+	}
+	return ""
+}
+
+func getPort(hostPort string) (uint16, error) {
+	sp := strings.Split(hostPort, ":")
+	if len(sp) > 1 {
+		p, err := strconv.Atoi(sp[1])
+		if err != nil {
+			return 0, err
+		}
+		return uint16(p), nil
+	}
+	return 0, fmt.Errorf("unable to extract port from %s", hostPort)
+}
+
+// finds the pcap network device matching the requested network interface
+// on windows the network devices have weird names, so we match the interface and device based on their assigned IP addresses
+// see https://forum.golangbridge.org/t/soved-gopacket-pcap-and-windows-device-names/15856/2
+// https://superuser.com/questions/902577/windows-7-network-adapter-device-name-using-winpcap
+func GetPcapNetworkDevice(netInterface *net.Interface) (string, error) {
+	ifAddresses, err := getInterfaceIps(netInterface)
+	if err != nil {
+		return "", err
+	}
+
+	ifs, err := pcap.FindAllDevs()
+	if err != nil {
+		return "", err
+	}
+	for _, i := range ifs {
+		addresses := getDeviceIps(i)
+		if containsSameElements(ifAddresses, addresses) {
+			return i.Name, nil
+		}
+	}
+	return "", fmt.Errorf("pcap network device not found for net interface %s", netInterface.Name)
+}
+
+func getInterfaceIps(netInterface *net.Interface) ([]string, error) {
+	addrs, err := netInterface.Addrs()
+	if err != nil {
+		return nil, err
+	}
+	ifAddresses := make([]string, len(addrs))
+	for i, a := range addrs {
+		ifAddresses[i] = removeMask(a.String())
+	}
+	return ifAddresses, nil
+}
+
+func getDeviceIps(i pcap.Interface) []string {
+	addresses := make([]string, 0, len(i.Addresses))
+	for _, a := range i.Addresses {
+		addr := a.IP.String()
+		if addr != "" {
+			addresses = append(addresses, addr)
+		}
+	}
+	return addresses
+}
+
+func containsSameElements(a []string, b []string) bool {
+	aMap := make(map[string]struct{})
+	bMap := make(map[string]struct{})
+	for _, i := range a {
+		aMap[i] = struct{}{}
+	}
+	for _, i := range b {
+		bMap[i] = struct{}{}
+	}
+	if len(aMap) != len(bMap) {
+		return false
+	}
+	for k := range aMap {
+		_, ok := bMap[k]
+		if !ok {
+			return false
+		}
+	}
+	return true
+}
+
+// Calculates the mac multicast address for a given ip multicast address
+// see http://www.dqnetworks.ie/toolsinfo.d/multicastaddressing.html#convertertool
+func MulticastIpToMac(ip net.IP) (net.HardwareAddr, error) {
+	if !ip.IsMulticast() {
+		return nil, fmt.Errorf("IP %s is not a multicast address", ip.String())
+	}
+	res := make([]byte, 0, 6)
+	base := []byte(multicastHwBase)
+	res = append(res, base[:3]...)
+	res = append(res, []byte(ip)[len(ip)-3]&0x7F) // sets the first bit to 0
+	res = append(res, []byte(ip)[len(ip)-2:]...)
+	return res, nil
 }
