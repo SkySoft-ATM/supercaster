@@ -9,6 +9,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
+      - name: install pcap
+        run: sudo apt-get install libpcap-dev
+
       - name: Set up go
         uses: actions/setup-go@v1
         with:
