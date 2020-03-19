@@ -2,6 +2,8 @@ package network
 
 import (
 	"context"
+	"encoding/binary"
+	"errors"
 	"fmt"
 	"github.com/google/gopacket/layers"
 	"github.com/google/gopacket/pcap"
@@ -177,7 +179,7 @@ type streamDiscovery interface {
 
 func ServiceStreamToUdpSpoofSourceAddr(service, streamName, interfaceName, hostPort string, sd streamDiscovery, pubType UdpPubType) error {
 	gorillaz.Log.Info("Starting publication", zap.String("stream name", streamName), zap.String("service", service),
-		zap.String("multicast address", hostPort))
+		zap.String("address", hostPort))
 	bo, cancel := backoffPolicy.Start(context.Background())
 	defer cancel()
 
@@ -226,8 +228,18 @@ func StreamToUdpSpoofSourceAddr(stream EventStream, udpPub UdpPub) error {
 	defer handle.Close()
 
 	dstMac := layers.EthernetBroadcast
+	destIp := net.ParseIP(getIp(udpPub.HostPort))
 	if udpPub.Type == Multicast {
-		dstMac, err = MulticastIpToMac(net.ParseIP(getIp(udpPub.HostPort)))
+		if destIp == nil {
+			return fmt.Errorf("multicast destination IP not configured")
+		}
+		dstMac, err = MulticastIpToMac(destIp)
+		if err != nil {
+			return err
+		}
+	}
+	if udpPub.Type == Broadcast && destIp == nil {
+		destIp, err = getBroadcastAddress(netIf)
 		if err != nil {
 			return err
 		}
@@ -245,7 +257,7 @@ func StreamToUdpSpoofSourceAddr(stream EventStream, udpPub UdpPub) error {
 		}
 		frameBytes, err := udp.CreateSerializedUDPFrame(udp.UdpFrameOptions{
 			SourceIP:     net.ParseIP(getIp(string(e.Key))),
-			DestIP:       net.ParseIP(getIp(udpPub.HostPort)),
+			DestIP:       destIp,
 			SourcePort:   srcPort,
 			DestPort:     dstPort,
 			SourceMac:    hwAddr,
@@ -264,6 +276,37 @@ func StreamToUdpSpoofSourceAddr(stream EventStream, udpPub UdpPub) error {
 	}
 
 	return nil
+}
+
+//returns the last address of an IPNet (i.e. broadcast address)
+func LastAddr(n *net.IPNet) (net.IP, error) {
+	if n.IP.To4() == nil {
+		return net.IP{}, errors.New("does not support IPv6 addresses")
+	}
+	ip := make(net.IP, len(n.IP.To4()))
+	binary.BigEndian.PutUint32(ip, binary.BigEndian.Uint32(n.IP.To4())|^binary.BigEndian.Uint32(net.IP(n.Mask).To4()))
+	return ip, nil
+}
+
+func getBroadcastAddress(netIf *net.Interface) (net.IP, error) {
+	addrs, err := netIf.Addrs()
+	if err != nil {
+		return nil, fmt.Errorf("could not find addresses on network interface %s : %w", netIf.Name, err)
+	}
+	for _, a := range addrs {
+		ip, ipnet, err := net.ParseCIDR(a.String())
+		if err != nil {
+			return nil, fmt.Errorf("could not parse address %v : %w", a, err)
+		}
+		if ip.To4() != nil {
+			b, err := LastAddr(ipnet)
+			if err != nil {
+				return nil, fmt.Errorf("could not find last address for %v : %w", ipnet.String(), err)
+			}
+			return b, nil
+		}
+	}
+	return nil, fmt.Errorf("empty addresses on network interface %s : %w", netIf.Name, err)
 }
 
 func getIp(hostPort string) string {
