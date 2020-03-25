@@ -8,13 +8,15 @@ import (
 	"go.uber.org/zap"
 	"golang.org/x/net/ipv4"
 	"net"
-	"strings"
 )
 
 func ReceiveData(source network.UdpSource, handler network.Handler) error {
-	hostPort := strings.Split(source.HostPort, ":")
-	group := net.ParseIP(hostPort[0])
-	c, err := net.ListenPacket("udp", fmt.Sprintf("0.0.0.0:%s", hostPort[1]))
+	host, port, err := network.GetHostAndPort(source.HostPort)
+	if err != nil {
+		return err
+	}
+	group := net.ParseIP(host)
+	c, err := net.ListenPacket("udp", fmt.Sprintf("0.0.0.0:%d", port))
 	if err != nil {
 		return fmt.Errorf("unable to listen: %w", err)
 	}
@@ -38,7 +40,7 @@ func ReceiveData(source network.UdpSource, handler network.Handler) error {
 		if err != nil {
 			gorillaz.Log.Fatal("Unable to read.", zap.Error(err))
 		}
-		handler(n, src.String(), b)
+		handler(n, src.String(), source.HostPort, b)
 	}
 }
 
@@ -47,10 +49,10 @@ func UdpToStream(g *gorillaz.Gaz, source network.UdpSource, streamName string) e
 	if err != nil {
 		return err
 	}
-	return ReceiveData(source, func(nbBytes int, source string, data []byte) {
-		gorillaz.Log.Debug(fmt.Sprintf("Received %d bytes from %s.", nbBytes, source))
+	return ReceiveData(source, func(nbBytes int, source, dest string, data []byte) {
+		gorillaz.Log.Debug(fmt.Sprintf("Received %d bytes from %s", nbBytes, source))
 		err = sp.SubmitNonBlocking(&stream.Event{
-			Key:   []byte(source),
+			Key:   []byte(source + ">" + dest),
 			Value: data[:nbBytes],
 		})
 		if err != nil {

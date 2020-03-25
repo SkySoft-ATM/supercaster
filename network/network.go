@@ -29,7 +29,7 @@ const ConfigNetworkInterface = "network.interface"
 
 var multicastHwBase, _ = net.ParseMAC("01:00:5e:00:00:00")
 
-type Handler func(nbBytes int, source string, data []byte)
+type Handler func(nbBytes int, source, dest string, data []byte)
 
 type UdpSource struct {
 	NetInterface    *net.Interface
@@ -227,15 +227,25 @@ func StreamToUdpSpoofSourceAddr(stream EventStream, udpPub UdpPub) error {
 	}
 	defer handle.Close()
 
-	dstMac := layers.EthernetBroadcast
-	destIp := net.ParseIP(getIp(udpPub.HostPort))
-	if udpPub.Type == Multicast {
-		if destIp == nil {
-			return fmt.Errorf("multicast destination IP not configured")
-		}
-		dstMac, err = MulticastIpToMac(destIp)
+	destMac := layers.EthernetBroadcast
+	var destIp net.IP = nil
+	var destPort uint16 = 0
+
+	if (udpPub.HostPort) != "" {
+		var ip string
+		ip, destPort, err = GetHostAndPort(udpPub.HostPort)
 		if err != nil {
 			return err
+		}
+		destIp = net.ParseIP(ip)
+	}
+
+	if udpPub.Type == Multicast {
+		if destIp != nil {
+			destMac, err = MulticastIpToMac(destIp)
+			if err != nil {
+				return err
+			}
 		}
 	}
 	if udpPub.Type == Broadcast && destIp == nil {
@@ -244,25 +254,32 @@ func StreamToUdpSpoofSourceAddr(stream EventStream, udpPub UdpPub) error {
 			return err
 		}
 	}
-	dstPort, err := getPort(udpPub.HostPort)
-	if err != nil {
-		return err
-	}
 
 	for e := range stream.EvtChan() {
-		srcPort, err := getPort(string(e.Key))
+		srcIp, srcPort, dstIp, dstPort, err := GetSrcAndDstHostAndPort(string(e.Key))
 		if err != nil {
-			gorillaz.Log.Warn("could not extract port", zap.Error(err))
+			gorillaz.Log.Warn("could not extract src and dst addresses", zap.Error(err))
 			continue
 		}
+		if destIp == nil {
+			destIp = net.ParseIP(dstIp)
+			destMac, err = MulticastIpToMac(destIp)
+			if err != nil {
+				gorillaz.Log.Warn("could not generate multicast Mac address", zap.String("IP", dstIp), zap.Error(err))
+				continue
+			}
+		}
+		if destPort == 0 {
+			destPort = dstPort
+		}
 		frameBytes, err := udp.CreateSerializedUDPFrame(udp.UdpFrameOptions{
-			SourceIP:     net.ParseIP(getIp(string(e.Key))),
+			SourceIP:     net.ParseIP(srcIp),
 			DestIP:       destIp,
 			SourcePort:   srcPort,
-			DestPort:     dstPort,
+			DestPort:     destPort,
 			SourceMac:    hwAddr,
-			DestMac:      dstMac,
-			IsIPv6:       false,
+			DestMac:      destMac,
+			IsIPv6:       destIp.To4() == nil,
 			PayloadBytes: e.Value,
 		})
 		if err != nil {
@@ -272,9 +289,11 @@ func StreamToUdpSpoofSourceAddr(stream EventStream, udpPub UdpPub) error {
 		if err := handle.WritePacketData(frameBytes); err != nil {
 			gorillaz.Log.Fatal("error on WritePacketData", zap.Error(err))
 		}
-		fmt.Println("Sent", string(e.Value))
+		gorillaz.Log.Debug("Sent", zap.String("value", string(e.Value)), zap.String("srcIp", srcIp),
+			zap.Uint16("srcPort", srcPort),
+			zap.String("destIp", dstIp),
+			zap.Uint16("destPort", destPort))
 	}
-
 	return nil
 }
 
@@ -309,24 +328,37 @@ func getBroadcastAddress(netIf *net.Interface) (net.IP, error) {
 	return nil, fmt.Errorf("empty addresses on network interface %s : %w", netIf.Name, err)
 }
 
-func getIp(hostPort string) string {
-	sp := strings.Split(hostPort, ":")
-	if len(sp) > 0 {
-		return sp[0]
+func GetSrcAndDstHostAndPort(endpoints string) (string, uint16, string, uint16, error) {
+	sp := strings.Split(endpoints, ">")
+	if len(sp) != 2 {
+		return "", 0, "", 0, fmt.Errorf("invalid endpoint format %s", endpoints)
 	}
-	return ""
+	srcHost, srcPort, err := GetHostAndPort(sp[0])
+	if err != nil {
+		return "", 0, "", 0, err
+	}
+	dstHost, dstPort, err := GetHostAndPort(sp[1])
+	if err != nil {
+		return "", 0, "", 0, err
+	}
+	return srcHost, srcPort, dstHost, dstPort, nil
 }
 
-func getPort(hostPort string) (uint16, error) {
+func GetHostAndPort(hostPort string) (string, uint16, error) {
 	sp := strings.Split(hostPort, ":")
+	host := ""
+	if len(sp) > 0 {
+		host = sp[0]
+	}
 	if len(sp) > 1 {
 		p, err := strconv.Atoi(sp[1])
 		if err != nil {
-			return 0, err
+			return "", 0, err
 		}
-		return uint16(p), nil
+		return host, uint16(p), nil
+	} else {
+		return "", 0, fmt.Errorf("unable to extract port from %s", hostPort)
 	}
-	return 0, fmt.Errorf("unable to extract port from %s", hostPort)
 }
 
 // finds the pcap network device matching the requested network interface

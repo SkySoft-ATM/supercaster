@@ -25,7 +25,7 @@ func ReceiveData(source network.UdpSource, handler network.Handler) error {
 		if err != nil {
 			gorillaz.Log.Fatal("Unable to read.", zap.Error(err))
 		}
-		handler(n, src.String(), b)
+		handler(n, src.String(), source.HostPort, b)
 	}
 }
 
@@ -34,10 +34,10 @@ func UdpToStream(g *gorillaz.Gaz, source network.UdpSource, streamName string) e
 	if err != nil {
 		return err
 	}
-	return ReceiveData(source, func(nbBytes int, source string, data []byte) {
+	return ReceiveData(source, func(nbBytes int, source, dest string, data []byte) {
 		gorillaz.Log.Debug(fmt.Sprintf("Received %d bytes from %s.", nbBytes, source))
 		err = sp.SubmitNonBlocking(&stream.Event{
-			Key:   []byte(source),
+			Key:   []byte(source + ">" + dest),
 			Value: data[:nbBytes],
 		})
 		if err != nil {

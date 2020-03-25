@@ -72,13 +72,13 @@ func main() {
 		}
 	case configDirectionMCRecv:
 		go panicIf(func() error {
-			return multicast.ReceiveData(udpSource(interfaceName, udpHostport, maxDatagramSize), func(n int, src string, b []byte) {
+			return multicast.ReceiveData(udpSource(interfaceName, udpHostport, maxDatagramSize), func(n int, src, dst string, b []byte) {
 				gorillaz.Log.Info(fmt.Sprintf("Received %d bytes from %s: %s", n, src, string(b[:n])))
 			})
 		})
 	case configDirectionBCRecv:
 		go panicIf(func() error {
-			return broadcast.ReceiveData(udpSource(interfaceName, udpHostport, maxDatagramSize), func(n int, src string, b []byte) {
+			return broadcast.ReceiveData(udpSource(interfaceName, udpHostport, maxDatagramSize), func(n int, src, dst string, b []byte) {
 				gorillaz.Log.Info(fmt.Sprintf("Received %d bytes from %s: %s", n, src, string(b[:n])))
 			})
 		})
