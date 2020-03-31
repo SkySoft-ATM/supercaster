@@ -3,6 +3,7 @@ package broadcast
 import (
 	"fmt"
 	"github.com/skysoft-atm/gorillaz"
+	"github.com/skysoft-atm/gorillaz/mux"
 	"github.com/skysoft-atm/gorillaz/stream"
 	"github.com/skysoft-atm/supercaster/network"
 	"go.uber.org/zap"
@@ -44,5 +45,17 @@ func UdpToStream(g *gorillaz.Gaz, source network.UdpSource, streamName string) e
 			gorillaz.Log.Error("error while submitting on stream", zap.Error(err))
 		}
 	})
+}
 
+func UdpToBroadcaster(source network.UdpSource, broadcaster *mux.Broadcaster) error {
+	return ReceiveData(source, func(nbBytes int, source, dest string, data []byte) {
+		gorillaz.Log.Debug(fmt.Sprintf("Received %d bytes from %s.", nbBytes, source))
+		err := broadcaster.SubmitNonBlocking(&stream.Event{
+			Key:   []byte(source + ">" + dest),
+			Value: data[:nbBytes],
+		})
+		if err != nil {
+			gorillaz.Log.Warn("error while submitting on broadcaster", zap.Error(err))
+		}
+	})
 }
