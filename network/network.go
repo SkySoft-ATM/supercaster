@@ -9,6 +9,7 @@ import (
 	"github.com/google/gopacket/pcap"
 	"github.com/lestrrat-go/backoff"
 	"github.com/skysoft-atm/gorillaz"
+	"github.com/skysoft-atm/gorillaz/mux"
 	"github.com/skysoft-atm/gorillaz/stream"
 	"github.com/skysoft-atm/supercaster/udp"
 	"go.uber.org/zap"
@@ -187,6 +188,36 @@ func StreamToUdp(ctx context.Context, stream EventStream, hostPort string) error
 		select {
 		case msg := <-stream.EvtChan():
 			_, err := c.Write(msg.Value)
+			if err != nil {
+				gorillaz.Log.Error("Error while writing to UDP ", zap.Error(err))
+			}
+		case <-ctx.Done():
+			gorillaz.Log.Debug("Stopping udp publication", zap.String("destination", hostPort))
+			return nil
+		}
+	}
+}
+
+func BroadcasterToUdp(ctx context.Context, broadcaster *mux.Broadcaster, hostPort string) error {
+	addr, err := net.ResolveUDPAddr("udp", hostPort)
+	if err != nil {
+		return fmt.Errorf("unable to resolve address: %w", err)
+	}
+	c, err := net.DialUDP("udp", nil, addr)
+	if err != nil {
+		return fmt.Errorf("unable to dial UDP: %w", err)
+	}
+	defer func() {
+		_ = c.Close()
+	}()
+	cli := make(chan interface{})
+	broadcaster.Register(cli)
+	defer broadcaster.Unregister(cli)
+
+	for {
+		select {
+		case msg := <-cli:
+			_, err := c.Write(msg.(*stream.Event).Value)
 			if err != nil {
 				gorillaz.Log.Error("Error while writing to UDP ", zap.Error(err))
 			}
