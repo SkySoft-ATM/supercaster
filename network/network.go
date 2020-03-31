@@ -38,30 +38,21 @@ type UdpSource struct {
 }
 
 func GetNetworkInterface(interfaceName string) *net.Interface {
+	gorillaz.Log.Info("Available interfaces:")
+	addresses, err := GetNetworkInterfaceAddresses()
+	if err != nil {
+		panic(err)
+	}
+
+	for k, v := range addresses {
+		gorillaz.Sugar.Infof("%s - %s", k, strings.Join(v, ","))
+	}
+
 	interfaces, e := net.Interfaces()
 	if e != nil {
 		panic(e)
 	}
-	gorillaz.Log.Info("Available interfaces:")
 
-	for _, i := range interfaces {
-
-		addresses := make([]string, 0)
-		addr, err := i.Addrs()
-		if err == nil {
-			for _, a := range addr {
-				ip := a.String()
-				if ip != "" {
-					ip := removeMask(ip)
-					addresses = append(addresses, ip)
-				}
-			}
-			gorillaz.Sugar.Infof("%s - %s", i.Name, strings.Join(addresses, ","))
-		} else {
-			gorillaz.Log.Info(i.Name)
-		}
-
-	}
 	var netInterface *net.Interface
 	if interfaceName != "" {
 		for _, i := range interfaces {
@@ -77,6 +68,34 @@ func GetNetworkInterface(interfaceName string) *net.Interface {
 		gorillaz.Sugar.Infof("Selected network interface %s", netInterface.Name)
 	}
 	return netInterface
+}
+
+// return the list of IP addresses by network interface
+func GetNetworkInterfaceAddresses() (map[string][]string, error) {
+	interfaces, e := net.Interfaces()
+	if e != nil {
+		return nil, e
+	}
+	res := make(map[string][]string)
+
+	for _, i := range interfaces {
+
+		addresses := make([]string, 0)
+		addr, err := i.Addrs()
+		if err == nil {
+			for _, a := range addr {
+				ip := a.String()
+				if ip != "" {
+					ip := removeMask(ip)
+					addresses = append(addresses, ip)
+				}
+			}
+			res[strings.TrimSpace(i.Name)] = addresses
+		} else {
+			gorillaz.Log.Warn("error while getting addresses from interface", zap.String("interface", i.Name), zap.Error(err))
+		}
+	}
+	return res, nil
 }
 
 func removeMask(ip string) string {
@@ -120,7 +139,7 @@ func GrpcToUdp(grpcEndpoints []string, streamName string, hostPort string, gaz *
 		if err != nil {
 			return fmt.Errorf("unable to consume stream %s: %w", streamName, err)
 		}
-		err = StreamToUdp(consumer, hostPort)
+		err = StreamToUdp(context.Background(), consumer, hostPort)
 		if err != nil {
 			return err
 		}
@@ -138,7 +157,7 @@ func ServiceStreamToUdp(service string, streamName string, hostPort string, gaz 
 		if err != nil {
 			return fmt.Errorf("unable to consume stream %s/%s: %w", service, streamName, err)
 		}
-		err = StreamToUdp(consumer, hostPort)
+		err = StreamToUdp(context.Background(), consumer, hostPort)
 		consumer.Stop()
 		if err != nil {
 			return err
@@ -151,7 +170,7 @@ type EventStream interface {
 	EvtChan() chan *stream.Event
 }
 
-func StreamToUdp(stream EventStream, hostPort string) error {
+func StreamToUdp(ctx context.Context, stream EventStream, hostPort string) error {
 	addr, err := net.ResolveUDPAddr("udp", hostPort)
 	if err != nil {
 		return fmt.Errorf("unable to resolve address: %w", err)
@@ -164,13 +183,18 @@ func StreamToUdp(stream EventStream, hostPort string) error {
 		_ = c.Close()
 	}()
 
-	for msg := range stream.EvtChan() {
-		_, err := c.Write(msg.Value)
-		if err != nil {
-			gorillaz.Log.Error("Error while writing to UDP ", zap.Error(err))
+	for {
+		select {
+		case msg := <-stream.EvtChan():
+			_, err := c.Write(msg.Value)
+			if err != nil {
+				gorillaz.Log.Error("Error while writing to UDP ", zap.Error(err))
+			}
+		case <-ctx.Done():
+			gorillaz.Log.Debug("Stopping udp publication", zap.String("destination", hostPort))
+			return nil
 		}
 	}
-	return nil
 }
 
 type streamDiscovery interface {
